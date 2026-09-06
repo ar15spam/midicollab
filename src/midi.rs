@@ -1,4 +1,37 @@
-use std::collections::HashSet; 
+use std::collections::{HashSet, HashMap}; 
+
+#[derive(Debug)]
+pub struct NetworkEvent {
+    pub sender_id: u8,
+    pub event: MidiEvent,
+}
+
+impl NetworkEvent {
+    pub fn to_bytes(&self) -> [u8; 5] {
+        let event_bytes = self.event.to_bytes();
+
+        [
+            self.sender_id,
+            event_bytes[0],
+            event_bytes[1],
+            event_bytes[2],
+            event_bytes[3],
+        ]
+    }
+
+    pub fn network_event_from_bytes(bytes: &[u8]) -> Option<NetworkEvent> {
+        if bytes.len() != 5 {
+            return None;
+        }
+
+        let event = event_from_bytes(&bytes[1..])?;
+
+        Some(NetworkEvent {
+            sender_id: bytes[0],
+            event,
+        })
+    }
+}
 
 #[derive(Debug)]
 pub enum MidiEvent {
@@ -44,29 +77,36 @@ pub fn event_from_bytes(bytes: &[u8]) -> Option<MidiEvent> {
 
 #[derive(Debug)]
 pub struct MidiState {
-    active_notes: HashSet<(u8, u8)> //channel, note 
+    active_notes: HashMap<usize, HashSet<(u8, u8)>> //channel, note 
 }
 
 impl MidiState {
     pub fn new() -> Self {
         Self {
-            active_notes: HashSet::new(), 
+            active_notes: HashMap::new(), 
         }
     }
 
-    pub fn active_notes(&self) -> &HashSet<(u8, u8)> {
+    pub fn active_notes(&self) -> &HashMap<usize, HashSet<(u8, u8)>> {
         &self.active_notes
     }
 
-    pub fn apply(&mut self, event: &MidiEvent) {
+    pub fn apply(&mut self, client_id: usize,  event: &MidiEvent) {
         match event {
-            MidiEvent::NoteOn { channel, note, .. } => { self.active_notes.insert((*channel, *note)); },
-            MidiEvent::NoteOff { channel, note, .. } => { self.active_notes.remove(&(*channel, *note)); }, 
+            MidiEvent::NoteOn { channel, note, .. } => { self.active_notes.entry(client_id).or_insert_with(HashSet::new).insert((*channel, *note)); },
+            MidiEvent::NoteOff { channel, note, .. } => { 
+                if let Some(notes) = self.active_notes.get_mut(&client_id) {
+                    notes.remove(&(*channel, *note)); 
+                }
+            }, 
             MidiEvent::ControlChange { .. } => {}, 
         }
     }
 
-    
+    pub fn remove_client(&mut self, client_id: usize) {
+        self.active_notes.remove(&client_id);
+    }
+
 }
 
 

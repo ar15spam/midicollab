@@ -1,23 +1,24 @@
 mod midi;
 
-use std::sync::{Arc, Mutex};
-use midi::{parse_midi, MidiState};
-use midir::{Ignore, MidiInput}; 
-use std::io::stdin; 
-use std::io::Write;
+use midi::{NetworkEvent, parse_midi};
+
+use midir::{Ignore, MidiInput};
+
+use std::io::{stdin, Read, Write};
 use std::net::TcpStream;
+use std::thread;
 
 fn main() {
-
-    let mut midi_in = MidiInput::new("midi-collab").expect("Couldn't create an input");
+    let mut midi_in =
+        MidiInput::new("midi-collab").expect("Couldn't create MIDI input");
 
     midi_in.ignore(Ignore::None);
 
-    let ports = midi_in.ports(); 
+    let ports = midi_in.ports();
 
     if ports.is_empty() {
-        println!("No input ports"); 
-        return; 
+        println!("No input ports");
+        return;
     }
 
     for (i, port) in ports.iter().enumerate() {
@@ -28,38 +29,62 @@ fn main() {
         println!("{i}: {name}");
     }
 
-    let port = &ports[0]; 
-    let port_name = midi_in.port_name(port).unwrap_or_else(|_| "Unknown".to_string()); 
+    let port = &ports[0];
 
-    println!("Connecting to {}", port_name); 
+    let port_name = midi_in.port_name(port).unwrap_or_else(|_| "Unknown".to_string());
 
-    let state = Arc::new(Mutex::new(MidiState::new()));
-    let callback_state = Arc::clone(&state);
+    println!("Connecting to MIDI port: {port_name}");
 
     let mut tcp_stream = TcpStream::connect("127.0.0.1:9000").expect("Failed to connect to TCP server");
-    let read_stream = tcp_stream.try_clone().expect("couldn't clone the read stream"); 
 
-    let _connection = midi_in.connect(
-        port, 
-        "midi_collab", 
-        move |timestamp, message, _| {
-            if let Some(event) = parse_midi(message) {
-                println!("{timestamp}: {event:?}");
+    println!("Connected to TCP server");
 
-                {
-                    let mut state = callback_state.lock().unwrap();
-                    state.apply(&event);
-                    println!("Active notes: {:?}", state.active_notes());
+    let mut read_stream = tcp_stream.try_clone().expect("Couldn't clone TCP stream");
+
+    thread::spawn(move || {
+        loop {
+            let mut buffer = [0u8; 5];
+
+            match read_stream.read_exact(&mut buffer) {
+                Ok(_) => {
+                    if let Some(network_event) = NetworkEvent::network_event_from_bytes(&buffer) {
+                        println!(
+                            "REMOTE client {}: {:?}",
+                            network_event.sender_id,
+                            network_event.event
+                        );
+                    }
                 }
 
-                let bytes = event.to_bytes();
-                tcp_stream.write_all(&bytes).expect("failed"); 
+                Err(error) => {
+                    println!("Server disconnected: {error}");
+                    break;
+                }
             }
-        },
-        (), 
-    ).expect("failed to connect to the port"); 
+        }
+    });
 
+    let _connection = midi_in
+        .connect(
+            port,
+            "midi_collab",
+            move |timestamp, message, _| {
+                if let Some(event) = parse_midi(message) {
+                    println!("LOCAL {timestamp}: {event:?}");
+
+                   
+                    let bytes = event.to_bytes();
+
+                    if let Err(error) = tcp_stream.write_all(&bytes) {
+                        println!("Failed to send MIDI event: {error}");
+                    }
+                }
+            },
+            (),
+        )
+        .expect("Failed to connect to MIDI port");
+
+    
     let mut input = String::new();
     stdin().read_line(&mut input).unwrap();
 }
-
