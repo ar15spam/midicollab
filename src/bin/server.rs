@@ -1,110 +1,107 @@
 #[path = "../midi.rs"]
 mod midi;
 
-use std::io::{Read, Write};
-use std::net::{TcpListener, TcpStream};
-use std::sync::{Arc, Mutex};
-use std::thread;
+use midi::{MidiState, NetworkEvent};
+use std::sync::Arc;
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::net::TcpListener;
+use tokio::sync::{broadcast, Mutex};
 
-struct Client {
-    id: usize,
-    stream: TcpStream,
-}
-
-fn main() {
-    let listener =
-        TcpListener::bind("127.0.0.1:9000").expect("Failed to bind TCP listener");
-
+#[tokio::main]
+async fn main() -> std::io::Result<()> {
+    let listener = TcpListener::bind("127.0.0.1:9000").await?;
     println!("Server listening on 127.0.0.1:9000");
 
-    let state = Arc::new(Mutex::new(midi::MidiState::new()));
-    let clients = Arc::new(Mutex::new(Vec::<Client>::new()));
-
+    let state = Arc::new(Mutex::new(MidiState::new()));
     let mut next_client_id = 0usize;
 
-    for stream in listener.incoming() {
-        let mut stream = stream.expect("Failed to accept connection");
+
+    let (broadcast_tx, _) = broadcast::channel::<NetworkEvent>(1024);
+
+    loop {
+        let (stream, address) = listener.accept().await?;
 
         let client_id = next_client_id;
         next_client_id += 1;
 
-        let write_stream = stream
-            .try_clone()
-            .expect("Failed to clone TCP stream");
+        if client_id > u8::MAX as usize {
+            eprintln!("Rejecting {address}: protocol supports at most 256 client IDs");
+            continue;
+        }
 
-        clients.lock().unwrap().push(Client {
-            id: client_id,
-            stream: write_stream,
-        });
-
-        println!("Client {client_id} connected");
+        println!("Client {client_id} connected from {address}");
 
         let client_state = Arc::clone(&state);
-        let client_list = Arc::clone(&clients);
+        let client_broadcast_tx = broadcast_tx.clone();
+        let mut broadcast_rx = broadcast_tx.subscribe();
 
-        thread::spawn(move || {
+        tokio::spawn(async move {
+            let (mut reader, mut writer) = stream.into_split();
+            let mut incoming = [0u8; 4];
+
             loop {
-                // Clients send plain MidiEvent packets: 4 bytes.
-                let mut buffer = [0u8; 4];
+                tokio::select! {
+                    read_result = reader.read_exact(&mut incoming) => {
+                        match read_result {
+                            Ok(_) => {
+                                let Some(event) = midi::event_from_bytes(&incoming) else {
+                                    eprintln!("Client {client_id} sent an invalid MIDI packet");
+                                    continue;
+                                };
 
-                match stream.read_exact(&mut buffer) {
-                    Ok(_) => {
-                        if let Some(event) = midi::event_from_bytes(&buffer) {
-                            println!("Client {client_id}: {event:?}");
+                                println!("Client {client_id}: {event:?}");
 
-                            {
-                                let mut state = client_state.lock().unwrap();
-                                state.apply(client_id, &event);
+                                {
+                                    let mut state = client_state.lock().await;
+                                    state.apply(client_id, &event);
+                                    println!("Server state: {:?}", state.active_notes());
+                                }
 
-                                println!("Server state: {:?}", state.active_notes());
+                                let network_event = NetworkEvent {
+                                    sender_id: client_id as u8,
+                                    event,
+                                };
+
+                                if let Err(error) = client_broadcast_tx.send(network_event) {
+                                    eprintln!("Broadcast failed: {error}");
+                                }
                             }
-
-                            // The server adds trusted sender identity before broadcasting.
-                            let network_event = midi::NetworkEvent {
-                                sender_id: client_id as u8,
-                                event,
-                            };
-
-                            let packet = network_event.to_bytes();
-
-                            let mut clients = client_list.lock().unwrap();
-
-                            clients.retain_mut(|client| {
-                                // Do not echo the event back to the sender.
-                                if client.id == client_id {
-                                    return true;
-                                }
-
-                                match client.stream.write_all(&packet) {
-                                    Ok(_) => true,
-                                    Err(error) => {
-                                        println!(
-                                            "Removing client {}: {}",
-                                            client.id, error
-                                        );
-                                        false
-                                    }
-                                }
-                            });
+                            Err(error) => {
+                                println!("Client {client_id} disconnected: {error}");
+                                break;
+                            }
                         }
                     }
 
-                    Err(error) => {
-                        println!("Client {client_id} disconnected: {error}");
-                        break;
+                    broadcast_result = broadcast_rx.recv() => {
+                        match broadcast_result {
+                            Ok(network_event) => {
+                                if network_event.sender_id as usize == client_id {
+                                    continue;
+                                }
+
+                                let packet = network_event.to_bytes();
+
+                                if let Err(error) = writer.write_all(&packet).await {
+                                    println!("Failed to write to client {client_id}: {error}");
+                                    break;
+                                }
+                            }
+                            Err(broadcast::error::RecvError::Lagged(skipped)) => {
+                                eprintln!("Client {client_id} lagged and skipped {skipped} events");
+                            }
+                            Err(broadcast::error::RecvError::Closed) => {
+                                break;
+                            }
+                        }
                     }
                 }
             }
 
             {
-                let mut state = client_state.lock().unwrap();
+                let mut state = client_state.lock().await;
                 state.remove_client(client_id);
             }
-
-            client_list
-                .lock()
-                .unwrap()
-                .retain(|client| client.id != client_id);
 
             println!("Removed client {client_id}");
         });

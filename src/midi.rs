@@ -1,6 +1,6 @@
 use std::collections::{HashSet, HashMap}; 
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct NetworkEvent {
     pub sender_id: u8,
     pub event: MidiEvent,
@@ -33,7 +33,7 @@ impl NetworkEvent {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub enum MidiEvent {
     NoteOn {
         channel: u8, 
