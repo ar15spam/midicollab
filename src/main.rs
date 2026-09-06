@@ -1,8 +1,11 @@
 mod midi;
 
-use midi::parse_midi;
+use std::sync::{Arc, Mutex};
+use midi::{parse_midi, MidiState};
 use midir::{Ignore, MidiInput}; 
 use std::io::stdin; 
+use std::io::Write;
+use std::net::TcpStream;
 
 fn main() {
 
@@ -30,12 +33,27 @@ fn main() {
 
     println!("Connecting to {}", port_name); 
 
+    let state = Arc::new(Mutex::new(MidiState::new()));
+    let callback_state = Arc::clone(&state);
+
+    let mut tcp_stream = TcpStream::connect("127.0.0.1:9000").expect("Failed to connect to TCP server");
+    let read_stream = tcp_stream.try_clone().expect("couldn't clone the read stream"); 
+
     let _connection = midi_in.connect(
         port, 
         "midi_collab", 
-        |timestamp, message, _| {
+        move |timestamp, message, _| {
             if let Some(event) = parse_midi(message) {
                 println!("{timestamp}: {event:?}");
+
+                {
+                    let mut state = callback_state.lock().unwrap();
+                    state.apply(&event);
+                    println!("Active notes: {:?}", state.active_notes());
+                }
+
+                let bytes = event.to_bytes();
+                tcp_stream.write_all(&bytes).expect("failed"); 
             }
         },
         (), 

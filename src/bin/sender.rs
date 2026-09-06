@@ -20,15 +20,13 @@ fn main() {
 
     let mut connection = midi_output.connect(port, "collab-output").expect("failed to connect to output"); 
 
-    connection
-        .send(&[0x90, 60, 100])
-        .expect("Failed to send Note On");
+    connection.send(&[0x90, 60, 100]).unwrap();
+    connection.send(&[0x90, 64, 100]).unwrap();
+    connection.send(&[0x90, 67, 100]).unwrap();
 
-    thread::sleep(Duration::from_millis(500));
+    thread::sleep(Duration::from_millis(1000));
 
-    connection
-        .send(&[0x80, 60, 0])
-        .expect("Failed to send Note Off");
-
-    
+    connection.send(&[0x80, 60, 0]).unwrap();
+    connection.send(&[0x80, 64, 0]).unwrap();
+    connection.send(&[0x80, 67, 0]).unwrap();
 }
