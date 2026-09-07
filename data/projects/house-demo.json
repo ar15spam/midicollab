@@ -1,0 +1,351 @@
+{
+  "projectId": "house-demo",
+  "name": "House Jam",
+  "bpm": 220,
+  "bars": 8,
+  "stepsPerBar": 16,
+  "playing": false,
+  "startAtMs": null,
+  "loopStartBar": 0,
+  "loopEndBar": 8,
+  "masterVolume": 0.67,
+  "revision": 256,
+  "tracks": [
+    {
+      "id": "drums",
+      "name": "Drums",
+      "kind": "drums",
+      "mixer": {
+        "volume": 1.0,
+        "pan": -0.12,
+        "muted": false,
+        "solo": false,
+        "delaySend": 0.0,
+        "reverbSend": 0.36
+      },
+      "clips": [
+        {
+          "id": "clip-drums",
+          "name": "House drums",
+          "kind": "drum",
+          "startBar": 0,
+          "lengthBars": 8,
+          "looped": true,
+          "patternSteps": 16,
+          "drumSteps": {
+            "hat": [
+              false,
+              false,
+              true,
+              false,
+              false,
+              false,
+              true,
+              false,
+              false,
+              false,
+              true,
+              false,
+              false,
+              false,
+              true,
+              false
+            ],
+            "open_hat": [
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true,
+              true,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true,
+              false
+            ],
+            "kick": [
+              true,
+              false,
+              false,
+              false,
+              true,
+              false,
+              false,
+              false,
+              true,
+              false,
+              false,
+              false,
+              true,
+              false,
+              false,
+              false
+            ],
+            "clap": [
+              false,
+              false,
+              false,
+              false,
+              true,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              false,
+              true,
+              false,
+              false,
+              false
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "id": "bass",
+      "name": "Deep Bass",
+      "kind": "synth",
+      "mixer": {
+        "volume": 0.72,
+        "pan": 0.0,
+        "muted": false,
+        "solo": false,
+        "delaySend": 0.03,
+        "reverbSend": 0.02
+      },
+      "synth": {
+        "preset": "deep_bass",
+        "oscillator": "sawtooth",
+        "attack": 0.005,
+        "decay": 0.16,
+        "sustain": 0.45,
+        "release": 0.12,
+        "cutoff": 720.0,
+        "resonance": 5.0,
+        "detune": 0.0
+      },
+      "clips": [
+        {
+          "id": "clip-bass",
+          "name": "Bassline",
+          "kind": "notes",
+          "startBar": 0,
+          "lengthBars": 8,
+          "looped": true,
+          "patternSteps": 16,
+          "notes": [
+            {
+              "id": "bass-0",
+              "note": 36,
+              "startStep": 0,
+              "durationSteps": 1,
+              "velocity": 105
+            },
+            {
+              "id": "bass-1",
+              "note": 36,
+              "startStep": 3,
+              "durationSteps": 1,
+              "velocity": 105
+            },
+            {
+              "id": "bass-2",
+              "note": 36,
+              "startStep": 6,
+              "durationSteps": 1,
+              "velocity": 105
+            },
+            {
+              "id": "bass-3",
+              "note": 39,
+              "startStep": 10,
+              "durationSteps": 1,
+              "velocity": 105
+            },
+            {
+              "id": "bass-4",
+              "note": 36,
+              "startStep": 12,
+              "durationSteps": 1,
+              "velocity": 105
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "chords",
+      "name": "Chords",
+      "kind": "synth",
+      "mixer": {
+        "volume": 0.5,
+        "pan": 0.0,
+        "muted": false,
+        "solo": false,
+        "delaySend": 0.08,
+        "reverbSend": 0.26
+      },
+      "synth": {
+        "preset": "pad",
+        "oscillator": "triangle",
+        "attack": 0.16,
+        "decay": 0.35,
+        "sustain": 0.75,
+        "release": 0.8,
+        "cutoff": 2400.0,
+        "resonance": 2.0,
+        "detune": -5.0
+      },
+      "clips": [
+        {
+          "id": "clip-chords",
+          "name": "Chords",
+          "kind": "notes",
+          "startBar": 0,
+          "lengthBars": 8,
+          "looped": true,
+          "patternSteps": 16,
+          "notes": [
+            {
+              "id": "chord-a-0",
+              "note": 60,
+              "startStep": 0,
+              "durationSteps": 4,
+              "velocity": 78
+            },
+            {
+              "id": "chord-a-1",
+              "note": 63,
+              "startStep": 0,
+              "durationSteps": 4,
+              "velocity": 78
+            },
+            {
+              "id": "chord-a-2",
+              "note": 67,
+              "startStep": 0,
+              "durationSteps": 4,
+              "velocity": 78
+            },
+            {
+              "id": "chord-b-0",
+              "note": 58,
+              "startStep": 8,
+              "durationSteps": 4,
+              "velocity": 76
+            },
+            {
+              "id": "chord-b-1",
+              "note": 62,
+              "startStep": 8,
+              "durationSteps": 4,
+              "velocity": 76
+            },
+            {
+              "id": "chord-b-2",
+              "note": 65,
+              "startStep": 8,
+              "durationSteps": 4,
+              "velocity": 76
+            }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "lead",
+      "name": "Lead",
+      "kind": "synth",
+      "mixer": {
+        "volume": 0.42,
+        "pan": 0.0,
+        "muted": false,
+        "solo": false,
+        "delaySend": 0.22,
+        "reverbSend": 0.18
+      },
+      "synth": {
+        "preset": "pluck",
+        "oscillator": "square",
+        "attack": 0.002,
+        "decay": 0.12,
+        "sustain": 0.18,
+        "release": 0.09,
+        "cutoff": 2600.0,
+        "resonance": 4.0,
+        "detune": 0.0
+      },
+      "clips": [
+        {
+          "id": "clip-lead",
+          "name": "Lead idea",
+          "kind": "notes",
+          "startBar": 4,
+          "lengthBars": 4,
+          "looped": true,
+          "patternSteps": 16,
+          "notes": [
+            {
+              "id": "lead-0",
+              "note": 72,
+              "startStep": 0,
+              "durationSteps": 1,
+              "velocity": 88
+            },
+            {
+              "id": "lead-1",
+              "note": 75,
+              "startStep": 2,
+              "durationSteps": 1,
+              "velocity": 88
+            },
+            {
+              "id": "lead-2",
+              "note": 79,
+              "startStep": 4,
+              "durationSteps": 1,
+              "velocity": 88
+            },
+            {
+              "id": "lead-3",
+              "note": 77,
+              "startStep": 7,
+              "durationSteps": 1,
+              "velocity": 88
+            },
+            {
+              "id": "lead-4",
+              "note": 75,
+              "startStep": 10,
+              "durationSteps": 1,
+              "velocity": 88
+            },
+            {
+              "id": "lead-5",
+              "note": 72,
+              "startStep": 12,
+              "durationSteps": 1,
+              "velocity": 88
+            },
+            {
+              "id": "lead-6",
+              "note": 70,
+              "startStep": 14,
+              "durationSteps": 1,
+              "velocity": 88
+            }
+          ]
+        }
+      ]
+    }
+  ],
+  "samples": []
+}
