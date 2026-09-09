@@ -10,14 +10,13 @@ use std::{
 };
 
 use axum::{
-    body::Body,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         DefaultBodyLimit, Multipart, Path as AxumPath, State,
     },
-    http::{header, HeaderValue, StatusCode},
-    response::{IntoResponse, Response},
-    routing::{get, post, put},
+    http::{header, HeaderMap, StatusCode},
+    response::IntoResponse,
+    routing::{get, post},
     Json, Router,
 };
 use futures_util::{SinkExt, StreamExt};
@@ -27,6 +26,90 @@ use tower_http::{
     cors::{Any, CorsLayer},
     services::ServeDir,
 };
+
+mod token {
+    //! Verifies the short-lived HMAC tokens minted by the Next.js app.
+    //! Format:  base64url(payloadJson) "." base64url(hmacSha256(payloadB64))
+    //! The shared key comes from REALTIME_SHARED_SECRET (same value on Vercel).
+
+    use base64::{engine::general_purpose::URL_SAFE_NO_PAD, Engine};
+    use hmac::{Hmac, Mac};
+    use serde::Deserialize;
+    use sha2::Sha256;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[derive(Debug, Clone, Deserialize)]
+    pub struct Claims {
+        pub sub: String,
+        #[serde(default)]
+        pub name: String,
+        #[serde(default)]
+        pub image: Option<String>,
+        pub pid: String,
+        #[serde(default)]
+        pub role: String,
+        pub exp: u64,
+    }
+
+    #[derive(Debug)]
+    pub enum TokenError {
+        NotConfigured,
+        Malformed,
+        BadSignature,
+        Expired,
+        WrongProject,
+    }
+
+    pub fn secret() -> Option<String> {
+        std::env::var("REALTIME_SHARED_SECRET")
+            .ok()
+            .filter(|value| value.len() >= 16)
+    }
+
+    /// Verify signature + expiry only (does not check which project it is for).
+    pub fn verify_any(raw: &str) -> Result<Claims, TokenError> {
+        let key = secret().ok_or(TokenError::NotConfigured)?;
+
+        let (payload_b64, sig_b64) = raw.split_once('.').ok_or(TokenError::Malformed)?;
+
+        let sig = URL_SAFE_NO_PAD
+            .decode(sig_b64.as_bytes())
+            .map_err(|_| TokenError::Malformed)?;
+
+        let mut mac = Hmac::<Sha256>::new_from_slice(key.as_bytes())
+            .map_err(|_| TokenError::NotConfigured)?;
+        mac.update(payload_b64.as_bytes());
+        mac.verify_slice(&sig).map_err(|_| TokenError::BadSignature)?;
+
+        let payload = URL_SAFE_NO_PAD
+            .decode(payload_b64.as_bytes())
+            .map_err(|_| TokenError::Malformed)?;
+        let claims: Claims =
+            serde_json::from_slice(&payload).map_err(|_| TokenError::Malformed)?;
+
+        let now = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap_or_default()
+            .as_secs();
+        if claims.exp <= now {
+            return Err(TokenError::Expired);
+        }
+
+        Ok(claims)
+    }
+
+    pub fn verify(raw: &str, expected_pid: &str) -> Result<Claims, TokenError> {
+        let claims = verify_any(raw)?;
+        if claims.pid != expected_pid {
+            return Err(TokenError::WrongProject);
+        }
+        Ok(claims)
+    }
+
+    pub fn can_edit(role: &str) -> bool {
+        matches!(role, "owner" | "editor")
+    }
+}
 
 type ClientId = u64;
 
@@ -158,6 +241,8 @@ struct ProjectState {
     loop_start_bar: usize,
     loop_end_bar: usize,
     master_volume: f32,
+    #[serde(default)]
+    is_public: bool,
     revision: u64,
     tracks: Vec<Track>,
     samples: Vec<SampleAsset>,
@@ -178,6 +263,7 @@ enum ProjectOperation {
         end_bar: usize,
     },
     SetMasterVolume { volume: f32 },
+    SetPublic { is_public: bool },
     AddTrack { track: Track },
     DeleteTrack { track_id: String },
     RenameTrack { track_id: String, name: String },
@@ -247,18 +333,29 @@ enum ProjectOperation {
 enum ClientMessage {
     Join {
         project_id: String,
-        username: String,
+        token: String,
     },
     ProjectOperation {
         operation: ProjectOperation,
     },
 }
 
+/// Authenticated identity of a connected client, derived from the signed token.
+#[derive(Debug, Clone)]
+struct Identity {
+    user_id: String,
+    name: String,
+    image: Option<String>,
+    role: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 struct UserPresence {
     client_id: ClientId,
-    username: String,
+    user_id: String,
+    name: String,
+    image: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -284,7 +381,7 @@ enum ServerMessage {
 struct Room {
     project: ProjectState,
     tx: broadcast::Sender<ServerMessage>,
-    clients: HashMap<ClientId, String>,
+    clients: HashMap<ClientId, Identity>,
 }
 
 #[derive(Clone)]
@@ -308,11 +405,21 @@ impl Store {
 
     async fn load_project(&self, project_id: &str) -> Option<ProjectState> {
         let bytes = tokio::fs::read(self.project_path(project_id)).await.ok()?;
-        serde_json::from_slice(&bytes).ok()
+        let mut project: ProjectState = serde_json::from_slice(&bytes).ok()?;
+        // Transport state is per-session and never restored from disk, so a
+        // page reload can't suddenly start playback.
+        project.playing = false;
+        project.start_at_ms = None;
+        Some(project)
     }
 
     async fn save_project(&self, project: &ProjectState) -> std::io::Result<()> {
-        let bytes = serde_json::to_vec_pretty(project)
+        // Persist a stopped transport regardless of the live room state.
+        let mut on_disk = project.clone();
+        on_disk.playing = false;
+        on_disk.start_at_ms = None;
+
+        let bytes = serde_json::to_vec_pretty(&on_disk)
             .map_err(std::io::Error::other)?;
         let path = self.project_path(&project.project_id);
         let temp = path.with_extension("json.tmp");
@@ -389,14 +496,31 @@ async fn ws_handler(
 async fn handle_socket(mut socket: WebSocket, state: AppState) {
     let client_id = state.next_client_id.fetch_add(1, Ordering::Relaxed);
 
-    let (project_id, username) = match socket.recv().await {
+    let (project_id, identity) = match socket.recv().await {
         Some(Ok(Message::Text(text))) => {
             match serde_json::from_str::<ClientMessage>(&text) {
-                Ok(ClientMessage::Join {
-                    project_id,
-                    username,
-                }) if valid_project_id(&project_id) => {
-                    (project_id, clean_name(&username, 40))
+                Ok(ClientMessage::Join { project_id, token })
+                    if valid_project_id(&project_id) =>
+                {
+                    match token::verify(&token, &project_id) {
+                        Ok(claims) => (
+                            project_id,
+                            Identity {
+                                user_id: claims.sub,
+                                name: {
+                                    let n = clean_name(&claims.name, 40);
+                                    if n.is_empty() { "Producer".to_string() } else { n }
+                                },
+                                image: claims.image,
+                                role: claims.role,
+                            },
+                        ),
+                        Err(reason) => {
+                            eprintln!("rejected join for {project_id}: {reason:?}");
+                            send_error(&mut socket, "invalid or expired invite token").await;
+                            return;
+                        }
+                    }
                 }
                 _ => {
                     send_error(&mut socket, "first message must be a valid join").await;
@@ -425,7 +549,7 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
             }
         });
 
-        room.clients.insert(client_id, username.clone());
+        room.clients.insert(client_id, identity.clone());
 
         (
             room.tx.clone(),
@@ -449,7 +573,13 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
 
     let _ = room_tx.send(ServerMessage::Presence { users });
 
-    println!("client {client_id} ({username}) joined project {project_id}");
+    println!(
+        "client {client_id} ({} / {}) joined project {project_id}",
+        identity.name, identity.role
+    );
+
+    let can_edit = token::can_edit(&identity.role);
+    let is_owner = identity.role == "owner";
 
     let (mut ws_sender, mut ws_receiver) = socket.split();
 
@@ -461,6 +591,14 @@ async fn handle_socket(mut socket: WebSocket, state: AppState) {
                         if let Ok(ClientMessage::ProjectOperation { operation }) =
                             serde_json::from_str::<ClientMessage>(&text)
                         {
+                            if !can_edit {
+                                continue;
+                            }
+                            // Only the owner may flip a project public/private.
+                            if matches!(operation, ProjectOperation::SetPublic { .. }) && !is_owner {
+                                continue;
+                            }
+
                             let updated = {
                                 let mut rooms = state.rooms.lock().await;
                                 let Some(room) = rooms.get_mut(&project_id) else { break; };
@@ -532,34 +670,66 @@ async fn cleanup_client(state: &AppState, project_id: &str, client_id: ClientId)
     }
 }
 
+fn bearer_token(headers: &HeaderMap) -> Option<String> {
+    let value = headers.get(header::AUTHORIZATION)?.to_str().ok()?;
+    value
+        .strip_prefix("Bearer ")
+        .or_else(|| value.strip_prefix("bearer "))
+        .map(|token| token.trim().to_string())
+}
+
 async fn get_project(
     AxumPath(project_id): AxumPath<String>,
     State(state): State<AppState>,
+    headers: HeaderMap,
 ) -> impl IntoResponse {
     if !valid_project_id(&project_id) {
         return (StatusCode::BAD_REQUEST, "invalid project id").into_response();
     }
 
-    {
+    let project = {
         let rooms = state.rooms.lock().await;
-        if let Some(room) = rooms.get(&project_id) {
-            return Json(room.project.clone()).into_response();
+        rooms.get(&project_id).map(|room| room.project.clone())
+    };
+
+    let project = match project {
+        Some(project) => project,
+        None => match state.store.load_project(&project_id).await {
+            Some(project) => project,
+            None => return (StatusCode::NOT_FOUND, "project not found").into_response(),
+        },
+    };
+
+    // Public projects are readable by anyone; private ones need a valid token.
+    if !project.is_public {
+        let ok = bearer_token(&headers)
+            .and_then(|raw| token::verify(&raw, &project_id).ok())
+            .is_some();
+        if !ok {
+            return (StatusCode::FORBIDDEN, "project is private").into_response();
         }
     }
 
-    match state.store.load_project(&project_id).await {
-        Some(project) => Json(project).into_response(),
-        None => (StatusCode::NOT_FOUND, "project not found").into_response(),
-    }
+    Json(project).into_response()
 }
 
 async fn put_project(
     AxumPath(project_id): AxumPath<String>,
     State(state): State<AppState>,
+    headers: HeaderMap,
     Json(mut project): Json<ProjectState>,
 ) -> impl IntoResponse {
     if !valid_project_id(&project_id) {
         return (StatusCode::BAD_REQUEST, "invalid project id").into_response();
+    }
+
+    // Writing the full document requires an editor/owner token for this project.
+    let authorized = bearer_token(&headers)
+        .and_then(|raw| token::verify(&raw, &project_id).ok())
+        .map(|claims| token::can_edit(&claims.role))
+        .unwrap_or(false);
+    if !authorized {
+        return (StatusCode::UNAUTHORIZED, "missing or invalid token").into_response();
     }
 
     project.project_id = project_id.clone();
@@ -592,8 +762,19 @@ async fn put_project(
 
 async fn upload_sample(
     State(state): State<AppState>,
+    headers: HeaderMap,
     mut multipart: Multipart,
 ) -> impl IntoResponse {
+    // Any signed, unexpired token is enough — this proves the caller is an
+    // authenticated MIDICOLLAB user and keeps the upload endpoint from being
+    // an open write-to-disk for the internet.
+    let authorized = bearer_token(&headers)
+        .and_then(|raw| token::verify_any(&raw).ok())
+        .is_some();
+    if !authorized {
+        return (StatusCode::UNAUTHORIZED, "missing or invalid token").into_response();
+    }
+
     while let Ok(Some(field)) = multipart.next_field().await {
         if field.name() != Some("file") {
             continue;
@@ -665,6 +846,9 @@ fn apply_operation(project: &mut ProjectState, operation: ProjectOperation) {
         }
         ProjectOperation::SetMasterVolume { volume } => {
             project.master_volume = volume.clamp(0.0, 1.0);
+        }
+        ProjectOperation::SetPublic { is_public } => {
+            project.is_public = is_public;
         }
         ProjectOperation::AddTrack { track } => {
             if project.tracks.len() < 64 {
@@ -837,12 +1021,14 @@ fn find_clip_mut<'a>(
         .find(|clip| clip.id == clip_id)
 }
 
-fn presence(clients: &HashMap<ClientId, String>) -> Vec<UserPresence> {
+fn presence(clients: &HashMap<ClientId, Identity>) -> Vec<UserPresence> {
     let mut users: Vec<_> = clients
         .iter()
-        .map(|(&client_id, username)| UserPresence {
+        .map(|(&client_id, identity)| UserPresence {
             client_id,
-            username: username.clone(),
+            user_id: identity.user_id.clone(),
+            name: identity.name.clone(),
+            image: identity.image.clone(),
         })
         .collect();
 
@@ -993,6 +1179,7 @@ fn default_project(project_id: &str) -> ProjectState {
         loop_start_bar: 0,
         loop_end_bar: 8,
         master_volume: 0.85,
+        is_public: false,
         revision: 0,
         tracks: vec![drums, bass, chords, lead],
         samples: vec![],
